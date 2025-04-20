@@ -2,8 +2,8 @@ name: Sync PhantomBuster Data to S3
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Runs daily at 6:00 AM UTC
-  workflow_dispatch:     # Allows manual trigger
+    - cron: '0 6 * * *'  # Daily at 6:00 AM UTC
+  workflow_dispatch:
 
 jobs:
   sync-job:
@@ -18,67 +18,66 @@ jobs:
       AWS_REGION: 'ap-south-1'
 
     steps:
-    - name: 📦 Checkout repository
-      uses: actions/checkout@v3
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v3
 
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    - name: 📥 Install dependencies
-      run: |
-        echo "[INFO] Installing dependencies..."
-        python -m pip install --upgrade pip
-        pip install requests boto3
+      - name: 📥 Install dependencies
+        run: |
+          echo "[INFO] Installing dependencies..."
+          python -m pip install --upgrade pip
+          pip install requests boto3
 
-    - name: 🧠 Debug: Check secrets loaded
-      run: |
-        echo "[DEBUG] PHANTOM_AGENT_ID is ${PHANTOM_AGENT_ID}"
-        echo "[DEBUG] S3_BUCKET_NAME is ${S3_BUCKET_NAME}"
+      - name: 🧠 Debug: Check secrets loaded
+        run: |
+          echo "[DEBUG] PHANTOM_AGENT_ID is ${PHANTOM_AGENT_ID}"
+          echo "[DEBUG] S3_BUCKET_NAME is ${S3_BUCKET_NAME}"
 
-    - name: 🧪 Run PhantomBuster script
-      run: |
-        set -e
-        echo "[INFO] Running PhantomBuster API extraction..."
-        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        OUTPUT_FILE="phantombuster_data_$TIMESTAMP.json"
+      - name: 🧪 Run PhantomBuster script
+        run: |
+          set -e
+          echo "[INFO] Running PhantomBuster API extraction..."
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          OUTPUT_FILE="phantombuster_data_$TIMESTAMP.json"
+          echo "[DEBUG] Output file will be: $OUTPUT_FILE"
 
-        echo "[DEBUG] Output file will be: $OUTPUT_FILE"
+          RESPONSE=$(curl -s -w "%{http_code}" -X GET \
+            "https://api.phantombuster.com/api/v2/agents/launch" \
+            -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
+            -G \
+            --data-urlencode "id=$PHANTOM_AGENT_ID")
 
-        RESPONSE=$(curl -s -w "%{http_code}" -X GET \
-          "https://api.phantombuster.com/api/v2/agents/launch" \
-          -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
-          -G \
-          --data-urlencode "id=$PHANTOM_AGENT_ID")
+          HTTP_STATUS="${RESPONSE: -3}"
+          BODY="${RESPONSE::-3}"
 
-        HTTP_STATUS="${RESPONSE: -3}"
-        BODY="${RESPONSE::-3}"
+          echo "[DEBUG] API response code: $HTTP_STATUS"
+          echo "[DEBUG] API response body: $BODY"
 
-        echo "[DEBUG] API response code: $HTTP_STATUS"
-        echo "[DEBUG] API response body: $BODY"
+          if [[ "$HTTP_STATUS" -ne 200 ]]; then
+            echo "[ERROR] Failed to launch PhantomBuster agent. Status: $HTTP_STATUS"
+            exit 1
+          fi
 
-        if [[ "$HTTP_STATUS" -ne 200 ]]; then
-          echo "[ERROR] Failed to launch PhantomBuster agent. Status: $HTTP_STATUS"
-          exit 1
-        fi
+          echo "$BODY" > "$OUTPUT_FILE"
+          echo "[INFO] PhantomBuster data saved to $OUTPUT_FILE"
 
-        echo "$BODY" > "$OUTPUT_FILE"
-        echo "[INFO] PhantomBuster data saved to $OUTPUT_FILE"
+      - name: ☁️ Upload to AWS S3
+        run: |
+          echo "[INFO] Uploading data to S3..."
+          FILE_TO_UPLOAD=$(ls phantombuster_data_*.json | head -n 1)
 
-    - name: ☁️ Upload to AWS S3
-      run: |
-        echo "[INFO] Uploading data to S3..."
-        FILE_TO_UPLOAD=$(ls phantombuster_data_*.json | head -n 1)
+          if [[ ! -f "$FILE_TO_UPLOAD" ]]; then
+            echo "[ERROR] Output file not found: $FILE_TO_UPLOAD"
+            exit 1
+          fi
 
-        if [[ ! -f "$FILE_TO_UPLOAD" ]]; then
-          echo "[ERROR] Output file not found: $FILE_TO_UPLOAD"
-          exit 1
-        fi
+          echo "[DEBUG] Uploading $FILE_TO_UPLOAD to bucket $S3_BUCKET_NAME..."
 
-        echo "[DEBUG] Uploading $FILE_TO_UPLOAD to bucket $S3_BUCKET_NAME..."
-
-        python3 - <<EOF
+          python3 - <<EOF
 import boto3
 import os
 
