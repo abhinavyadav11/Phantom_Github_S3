@@ -1,94 +1,63 @@
-name: Upload Data to S3 from PhantomBuster
+name: Sync PhantomBuster Data to S3
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    - cron: "0 * * * *"  # Run the job every hour (adjust cron schedule as needed)
 
 jobs:
-  upload-data:
+  sync-data:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Check for Required Secrets
-      - name: Check Required Secrets
+      # Step 1: Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      # Step 2: Setup PhantomBuster API Key and Agent ID (stored as secrets in GitHub)
+      - name: Set up PhantomBuster API Key and Agent ID
         run: |
-          echo "Checking for required secrets..."
-          
-          # Define secrets here for testing purposes (replace with GitHub Secrets in production)
-          PHANTOMBUSTER_API_KEY="6yYcfWE6vtYMfo7FkkwPCgd4yn851XiTIgwpjudSau0"
-          PHANTOM_AGENT_ID="2235977726864334"
-          AWS_ACCESS_KEY_ID="AKIA472NH4QZCR7AFFDJ"
-          AWS_SECRET_ACCESS_KEY="vQnxbuQFEbNDyPPWNPYUAGCq2mb5yewKgkl9Xda"
-          S3_BUCKET_NAME="phantombusterdata"
-          
-          # Check if PHANTOMBUSTER_API_KEY is set
-          if [ -z "$PHANTOMBUSTER_API_KEY" ]; then
-            echo "ERROR: PHANTOMBUSTER_API_KEY secret is missing!"
-            exit 1
-          fi
+          echo "PHANTOMBUSTER_API_KEY=${{ secrets.PHANTOMBUSTER_API_KEY }}" >> $GITHUB_ENV
+          echo "PHANTOM_AGENT_ID=${{ secrets.PHANTOM_AGENT_ID }}" >> $GITHUB_ENV
 
-          # Check if PHANTOM_AGENT_ID is set
-          if [ -z "$PHANTOM_AGENT_ID" ]; then
-            echo "ERROR: PHANTOM_AGENT_ID secret is missing!"
-            exit 1
-          fi
-
-          # Check if AWS credentials are set
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-            echo "ERROR: AWS credentials are missing!"
-            exit 1
-          fi
-
-          # Check if S3_BUCKET_NAME is set
-          if [ -z "$S3_BUCKET_NAME" ]; then
-            echo "ERROR: S3_BUCKET_NAME is missing!"
-            exit 1
-          fi
-
-          echo "All required secrets are present!"
-
-      # Step 2: Setup AWS CLI
+      # Step 3: Install AWS CLI if it's not already available
       - name: Setup AWS CLI
         run: |
-          # Install AWS CLI if it's not already available
-          sudo apt-get install awscli -y
+          # Install AWS CLI using the official AWS installation method
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
+          
+          # Verify installation
+          aws --version
           
           # Configure AWS CLI with the provided credentials
-          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws configure set default.region us-east-1
 
-      # Step 3: Get Data from PhantomBuster
-      - name: Get Data from PhantomBuster
+      # Step 4: Fetch data from PhantomBuster using the API Key and Agent ID
+      - name: Fetch data from PhantomBuster
         run: |
-          # Example command to execute PhantomBuster agent (replace with actual logic)
-          echo "Starting PhantomBuster API call..."
+          curl -X POST "https://api.phantombuster.com/v2/agents/${{ secrets.PHANTOM_AGENT_ID }}/launch" \
+          -H "Authorization: Bearer ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+          -d "{}"
+        
+      # Step 5: Wait for the PhantomBuster agent to finish (optional: can adjust the sleep duration)
+      - name: Wait for PhantomBuster to finish
+        run: sleep 60  # You can adjust this based on your agent's runtime
 
-          curl -X POST "https://phantombuster.com/api/v2/agents/$PHANTOM_AGENT_ID/launch" \
-            -H "Authorization: Bearer $PHANTOMBUSTER_API_KEY" \
-            -d "{}"  # Adjust as needed for the specific agent's requirements
-
-          echo "PhantomBuster data extraction started..."
-
-      # Step 4: Wait for PhantomBuster output (this step may vary based on your agent's behavior)
-      - name: Wait for PhantomBuster to finish and Download Data
+      # Step 6: Download the output file from PhantomBuster (assuming the result is saved in a file)
+      - name: Download PhantomBuster Data
         run: |
-          # Wait for the PhantomBuster agent to finish execution and download the output
-          echo "Waiting for PhantomBuster output to be ready..."
+          # Download the file using the PhantomBuster API (adjust if necessary)
+          curl -o phantom_data.json "https://phantombuster.com/api/v2/agents/${{ secrets.PHANTOM_AGENT_ID }}/file"
 
-          # Assuming PhantomBuster creates a file called 'output_data.json'
-          curl -O "https://phantombuster.com/your_phantom_output_link"  # Adjust as needed
-
-          echo "Data downloaded successfully."
-
-      # Step 5: Upload Data to S3
-      - name: Upload Data to S3
+      # Step 7: Upload the data to S3
+      - name: Upload data to S3
         run: |
-          echo "Uploading data to S3..."
-
-          # Assuming the data is in 'output_data.json', replace with the actual file name
-          aws s3 cp output_data.json s3://$S3_BUCKET_NAME/
-
-          echo "Data uploaded to S3 successfully!"
-
+          # Use AWS CLI to upload the file to S3 bucket
+          aws s3 cp phantom_data.json s3://${{ secrets.S3_BUCKET_NAME }}/phantom_data.json
+          
+      # Step 8: Optional - Notify the job completion (e.g., via Slack or other means)
+      - name: Notify completion
+        run: echo "PhantomBuster data has been successfully uploaded to S3!"
