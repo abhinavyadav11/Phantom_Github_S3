@@ -1,7 +1,7 @@
 name: PhantomBuster to S3 Sync
 
 on:
-  workflow_dispatch:        # Manual trigger
+  workflow_dispatch:        # Allow manual trigger
   schedule:
     - cron: '0 3 * * *'     # Also runs daily at 3 AM UTC
 
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
-      PHANTOM_AGENT_ID:     ${{ secrets.PHANTOM_AGENT_ID }}
-      AWS_ACCESS_KEY_ID:    ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY:${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      S3_BUCKET_NAME:       ${{ secrets.S3_BUCKET_NAME }}
+      PHANTOM_AGENT_ID:      ${{ secrets.PHANTOM_AGENT_ID }}
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      S3_BUCKET_NAME:        ${{ secrets.S3_BUCKET_NAME }}
 
     steps:
       - name: Checkout code
