@@ -48,7 +48,13 @@ jobs:
             -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
             -G --data-urlencode "id=$LAUNCH_ID" > launch_data.json
 
+          # Debugging: Check contents of the launch_data.json
+          echo "Launch Data: $(cat launch_data.json)"
+
           FILE_URL=$(jq -r '.launch.output.files[0].url' launch_data.json)
+
+          # Debugging: Check extracted file URL
+          echo "File URL: $FILE_URL"
 
           if [[ "$FILE_URL" == "null" ]]; then
             echo "No file found in output!"
@@ -56,7 +62,7 @@ jobs:
           fi
 
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          curl -L -o "scraped_data_$TIMESTAMP.json" "$FILE_URL"
+          curl -L -o "scraped_data_$TIMESTAMP.json" "$FILE_URL" || { echo "Download failed"; exit 1; }
           echo "FILENAME=scraped_data_$TIMESTAMP.json" >> $GITHUB_ENV
 
       - name: Upload to AWS S3
@@ -69,4 +75,3 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SOURCE_DIR: .
           DEST_DIR: "phantombuster/"
-
