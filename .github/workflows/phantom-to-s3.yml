@@ -1,97 +1,94 @@
-name: PhantomBuster to S3 Sync
+name: Upload Data to S3 from PhantomBuster
 
 on:
-  schedule:
-    - cron: '0 3 * * *'  # Every day at 3 AM UTC
-  workflow_dispatch:  # Allow manual trigger from GitHub UI
+  push:
+    branches:
+      - main
 
 jobs:
-  sync:
+  upload-data:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Check for Required Secrets
       - name: Check Required Secrets
         run: |
           echo "Checking for required secrets..."
-
-          if [ -z "${{ secrets.PHANTOMBUSTER_API_KEY }}" ]; then
+          
+          # Define secrets here for testing purposes (replace with GitHub Secrets in production)
+          PHANTOMBUSTER_API_KEY="6yYcfWE6vtYMfo7FkkwPCgd4yn851XiTIgwpjudSau0"
+          PHANTOM_AGENT_ID="2235977726864334"
+          AWS_ACCESS_KEY_ID="AKIA472NH4QZCR7AFFDJ"
+          AWS_SECRET_ACCESS_KEY="vQnxbuQFEbNDyPPWNPYUAGCq2mb5yewKgkl9Xda"
+          S3_BUCKET_NAME="phantombusterdata"
+          
+          # Check if PHANTOMBUSTER_API_KEY is set
+          if [ -z "$PHANTOMBUSTER_API_KEY" ]; then
             echo "ERROR: PHANTOMBUSTER_API_KEY secret is missing!"
             exit 1
           fi
 
-          if [ -z "${{ secrets.PHANTOM_AGENT_ID }}" ]; then
+          # Check if PHANTOM_AGENT_ID is set
+          if [ -z "$PHANTOM_AGENT_ID" ]; then
             echo "ERROR: PHANTOM_AGENT_ID secret is missing!"
             exit 1
           fi
 
-          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+          # Check if AWS credentials are set
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
             echo "ERROR: AWS credentials are missing!"
             exit 1
           fi
 
-          if [ -z "${{ secrets.S3_BUCKET_NAME }}" ]; then
+          # Check if S3_BUCKET_NAME is set
+          if [ -z "$S3_BUCKET_NAME" ]; then
             echo "ERROR: S3_BUCKET_NAME is missing!"
             exit 1
           fi
 
-      - name: Trigger PhantomBuster Agent
-        id: trigger
+          echo "All required secrets are present!"
+
+      # Step 2: Setup AWS CLI
+      - name: Setup AWS CLI
         run: |
-          echo "Triggering PhantomBuster agent..."
-          curl -s -X POST "https://api.phantombuster.com/api/v2/agents/launch" \
-            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"id\": \"${{ secrets.PHANTOM_AGENT_ID }}\", \"output\": \"first\"}" > launch_output.json
+          # Install AWS CLI if it's not already available
+          sudo apt-get install awscli -y
+          
+          # Configure AWS CLI with the provided credentials
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set default.region us-east-1
 
-          LAUNCH_ID=$(jq -r '.launch.id' launch_output.json)
-          echo "LAUNCH_ID=$LAUNCH_ID" >> $GITHUB_ENV
-
-      - name: Wait for Completion
+      # Step 3: Get Data from PhantomBuster
+      - name: Get Data from PhantomBuster
         run: |
-          echo "Waiting for PhantomBuster agent to finish..."
-          for i in {1..20}; do
-            STATUS=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
-              -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
-              -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.status')
+          # Example command to execute PhantomBuster agent (replace with actual logic)
+          echo "Starting PhantomBuster API call..."
 
-            echo "Attempt $i: STATUS = $STATUS"
+          curl -X POST "https://phantombuster.com/api/v2/agents/$PHANTOM_AGENT_ID/launch" \
+            -H "Authorization: Bearer $PHANTOMBUSTER_API_KEY" \
+            -d "{}"  # Adjust as needed for the specific agent's requirements
 
-            if [[ "$STATUS" == "finished" ]]; then
-              break
-            elif [[ "$STATUS" == "failed" ]]; then
-              echo "Agent failed!"
-              exit 1
-            fi
+          echo "PhantomBuster data extraction started..."
 
-            sleep 20
-          done
-
-      - name: Download Scraped File
+      # Step 4: Wait for PhantomBuster output (this step may vary based on your agent's behavior)
+      - name: Wait for PhantomBuster to finish and Download Data
         run: |
-          echo "Downloading result file..."
-          curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
-            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
-            -G --data-urlencode "id=$LAUNCH_ID" > launch_data.json
+          # Wait for the PhantomBuster agent to finish execution and download the output
+          echo "Waiting for PhantomBuster output to be ready..."
 
-          FILE_URL=$(jq -r '.launch.output.files[0].url' launch_data.json)
+          # Assuming PhantomBuster creates a file called 'output_data.json'
+          curl -O "https://phantombuster.com/your_phantom_output_link"  # Adjust as needed
 
-          if [[ "$FILE_URL" == "null" ]]; then
-            echo "No file found in output!"
-            exit 1
-          fi
+          echo "Data downloaded successfully."
 
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          FILE_NAME="scraped_data_$TIMESTAMP.json"
-          curl -L -o "$FILE_NAME" "$FILE_URL"
-          echo "FILENAME=$FILE_NAME" >> $GITHUB_ENV
+      # Step 5: Upload Data to S3
+      - name: Upload Data to S3
+        run: |
+          echo "Uploading data to S3..."
 
-      - name: Upload to AWS S3
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --exact-timestamps --exclude "*" --include "${{ env.FILENAME }}"
-        env:
-          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SOURCE_DIR: .
-          DEST_DIR: "phantombusterdata/"
+          # Assuming the data is in 'output_data.json', replace with the actual file name
+          aws s3 cp output_data.json s3://$S3_BUCKET_NAME/
+
+          echo "Data uploaded to S3 successfully!"
+
