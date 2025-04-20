@@ -1,63 +1,84 @@
-name: Sync PhantomBuster Data to S3
+name: PhantomBuster to S3 Sync
 
 on:
+  workflow_dispatch:        # Manual trigger
   schedule:
-    - cron: "0 * * * *"  # Run the job every hour (adjust cron schedule as needed)
+    - cron: '0 3 * * *'     # Also runs daily at 3 AM UTC
 
 jobs:
-  sync-data:
+  sync:
     runs-on: ubuntu-latest
+    env:
+      PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
+      PHANTOM_AGENT_ID:     ${{ secrets.PHANTOM_AGENT_ID }}
+      AWS_ACCESS_KEY_ID:    ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      S3_BUCKET_NAME:       ${{ secrets.S3_BUCKET_NAME }}
 
     steps:
-      # Step 1: Checkout code
-      - name: Checkout repository
-        uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      # Step 2: Setup PhantomBuster API Key and Agent ID (stored as secrets in GitHub)
-      - name: Set up PhantomBuster API Key and Agent ID
+      - name: Install prerequisites
         run: |
-          echo "PHANTOMBUSTER_API_KEY=${{ secrets.PHANTOMBUSTER_API_KEY }}" >> $GITHUB_ENV
-          echo "PHANTOM_AGENT_ID=${{ secrets.PHANTOM_AGENT_ID }}" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y unzip jq
 
-      # Step 3: Install AWS CLI if it's not already available
-      - name: Setup AWS CLI
+      - name: Install AWS CLI
         run: |
-          # Install AWS CLI using the official AWS installation method
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
           unzip awscliv2.zip
           sudo ./aws/install
-          
-          # Verify installation
           aws --version
-          
-          # Configure AWS CLI with the provided credentials
-          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Configure AWS CLI
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
           aws configure set default.region us-east-1
 
-      # Step 4: Fetch data from PhantomBuster using the API Key and Agent ID
-      - name: Fetch data from PhantomBuster
+      - name: Trigger PhantomBuster agent
+        id: trigger
         run: |
-          curl -X POST "https://api.phantombuster.com/v2/agents/${{ secrets.PHANTOM_AGENT_ID }}/launch" \
-          -H "Authorization: Bearer ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
-          -d "{}"
-        
-      # Step 5: Wait for the PhantomBuster agent to finish (optional: can adjust the sleep duration)
-      - name: Wait for PhantomBuster to finish
-        run: sleep 60  # You can adjust this based on your agent's runtime
+          echo "Launching agent $PHANTOM_AGENT_ID..."
+          resp=$(curl -s -X POST https://api.phantombuster.com/api/v2/agents/launch \
+            -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"id\":\"$PHANTOM_AGENT_ID\",\"output\":\"first\"}")
+          echo "Response: $resp"
+          launch_id=$(echo "$resp" | jq -r '.launch.id')
+          echo "LAUNCH_ID=$launch_id" >> $GITHUB_ENV
 
-      # Step 6: Download the output file from PhantomBuster (assuming the result is saved in a file)
-      - name: Download PhantomBuster Data
+      - name: Wait for agent to finish
         run: |
-          # Download the file using the PhantomBuster API (adjust if necessary)
-          curl -o phantom_data.json "https://phantombuster.com/api/v2/agents/${{ secrets.PHANTOM_AGENT_ID }}/file"
+          for i in {1..30}; do
+            status=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+              -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
+              -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.status')
+            echo "Attempt $i — status: $status"
+            if [[ "$status" == "finished" ]]; then
+              break
+            elif [[ "$status" == "failed" ]]; then
+              echo "❌ Agent failed!"
+              exit 1
+            fi
+            sleep 10
+          done
 
-      # Step 7: Upload the data to S3
-      - name: Upload data to S3
+      - name: Download results
+        id: download
         run: |
-          # Use AWS CLI to upload the file to S3 bucket
-          aws s3 cp phantom_data.json s3://${{ secrets.S3_BUCKET_NAME }}/phantom_data.json
-          
-      # Step 8: Optional - Notify the job completion (e.g., via Slack or other means)
-      - name: Notify completion
-        run: echo "PhantomBuster data has been successfully uploaded to S3!"
+          url=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+            -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
+            -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.output.files[0].url')
+          timestamp=$(date +'%Y%m%d_%H%M%S')
+          filename="phantom_data_${timestamp}.json"
+          echo "Downloading from $url → $filename"
+          curl -sL "$url" -o "$filename"
+          echo "FILENAME=$filename" >> $GITHUB_ENV
+
+      - name: Upload to S3
+        run: |
+          echo "Uploading $FILENAME to s3://$S3_BUCKET_NAME/$FILENAME"
+          aws s3 cp "$FILENAME" "s3://$S3_BUCKET_NAME/$FILENAME"
+          echo "✅ Upload complete."
