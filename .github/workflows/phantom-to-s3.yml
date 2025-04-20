@@ -12,18 +12,23 @@ jobs:
     steps:
       - name: Check Required Secrets
         run: |
+          echo "Checking for required secrets..."
+
           if [ -z "${{ secrets.PHANTOMBUSTER_API_KEY }}" ]; then
             echo "ERROR: PHANTOMBUSTER_API_KEY secret is missing!"
             exit 1
           fi
+
           if [ -z "${{ secrets.PHANTOM_AGENT_ID }}" ]; then
             echo "ERROR: PHANTOM_AGENT_ID secret is missing!"
             exit 1
           fi
+
           if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
             echo "ERROR: AWS credentials are missing!"
             exit 1
           fi
+
           if [ -z "${{ secrets.S3_BUCKET_NAME }}" ]; then
             echo "ERROR: S3_BUCKET_NAME is missing!"
             exit 1
