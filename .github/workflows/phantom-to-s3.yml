@@ -1,14 +1,15 @@
-name: PhantomBuster → S3
+name: PhantomBuster → S3 Sync
 
 on:
-  workflow_dispatch:        # Manual trigger
+  workflow_dispatch:       # manual run
   schedule:
-    - cron: '0 3 * * *'     # Daily at 3 AM UTC
+    - cron: '0 3 * * *'    # daily at 03:00 UTC
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     env:
+      # your five secrets must be set under Settings → Secrets
       PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
       PHANTOM_AGENT_ID:      ${{ secrets.PHANTOM_AGENT_ID }}
       S3_BUCKET_NAME:        ${{ secrets.S3_BUCKET_NAME }}
@@ -19,6 +20,17 @@ jobs:
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Debug: confirm secrets are loaded
+        run: |
+          # mask most of the values for safety
+          echo "PB API key prefix: ${PHANTOMBUSTER_API_KEY:0:4}*****"
+          echo "Agent ID: $PHANTOM_AGENT_ID"
+          echo "S3 bucket: $S3_BUCKET_NAME"
+          # fail if any are empty
+          [[ -z "$PHANTOMBUSTER_API_KEY" ]] && { echo "Missing PB API key"; exit 1; }
+          [[ -z "$PHANTOM_AGENT_ID"    ]] && { echo "Missing agent ID";   exit 1; }
+          [[ -z "$S3_BUCKET_NAME"      ]] && { echo "Missing bucket";     exit 1; }
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -35,8 +47,11 @@ jobs:
             -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
             -H "Content-Type: application/json" \
             -d "{\"id\":\"$PHANTOM_AGENT_ID\",\"output\":\"first\"}")
-          echo "Response: $resp"
+          echo "API response: $resp"
           launch_id=$(echo "$resp" | jq -r '.launch.id')
+          if [[ "$launch_id" == "null" || -z "$launch_id" ]]; then
+            echo "Failed to get launch ID"; exit 1
+          fi
           echo "LAUNCH_ID=$launch_id" >> $GITHUB_ENV
 
       - name: Wait for agent to finish
@@ -47,8 +62,11 @@ jobs:
               -G --data-urlencode "id=$LAUNCH_ID" \
               | jq -r '.launch.status')
             echo "Attempt $i — status: $status"
-            [[ $status == finished ]] && break
-            [[ $status == failed ]] && { echo "Agent failed"; exit 1; }
+            if [[ "$status" == "finished" ]]; then
+              break
+            elif [[ "$status" == "failed" ]]; then
+              echo "❌ Agent failed!"; exit 1
+            fi
             sleep 10
           done
 
@@ -59,6 +77,9 @@ jobs:
             -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
             -G --data-urlencode "id=$LAUNCH_ID" \
             | jq -r '.launch.output.files[0].url')
+          if [[ -z "$url" || "$url" == "null" ]]; then
+            echo "No file URL found"; exit 1
+          fi
           ts=$(date +'%Y%m%d_%H%M%S')
           fn="phantom_data_${ts}.json"
           echo "Downloading $url → $fn"
