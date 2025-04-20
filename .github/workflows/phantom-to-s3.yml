@@ -2,64 +2,91 @@ name: PhantomBuster to S3 Sync
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Runs daily at 6:00 AM UTC
-  workflow_dispatch:
+    - cron: '0 3 * * *'  # Every day at 3 AM UTC
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
-  phantom-to-s3:
+  sync:
     runs-on: ubuntu-latest
-    env:
-      PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
-      PHANTOM_AGENT_ID: ${{ secrets.PHANTOM_AGENT_ID }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
 
     steps:
-      - name: 🧼 Checkout repository
-        uses: actions/checkout@v3
-
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: ☁️ Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1  # ✅ Correct input key
-
-      - name: 🧪 Run PhantomBuster script
+      - name: Check Required Secrets
         run: |
-          set -e
-          echo "[INFO] Running PhantomBuster API extraction..."
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          OUTPUT_FILE="phantombuster_data_$TIMESTAMP.json"
-          echo "[DEBUG] Output file will be: $OUTPUT_FILE"
-
-          RESPONSE=$(curl -s -w "%{http_code}" -X GET "https://api.phantombuster.com/api/v2/agents/launch" \
-            -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
-            -G \
-            --data-urlencode "id=$PHANTOM_AGENT_ID")
-
-          HTTP_STATUS="${RESPONSE: -3}"
-          BODY="${RESPONSE::-3}"
-
-          echo "[DEBUG] API response code: $HTTP_STATUS"
-          echo "[DEBUG] API response body: $BODY"
-
-          if [[ "$HTTP_STATUS" -ne 200 ]]; then
-            echo "[ERROR] Failed to launch PhantomBuster agent. Status: $HTTP_STATUS"
+          if [ -z "${{ secrets.PHANTOMBUSTER_API_KEY }}" ]; then
+            echo "ERROR: PHANTOMBUSTER_API_KEY secret is missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.PHANTOM_AGENT_ID }}" ]; then
+            echo "ERROR: PHANTOM_AGENT_ID secret is missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "ERROR: AWS credentials are missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.S3_BUCKET_NAME }}" ]; then
+            echo "ERROR: S3_BUCKET_NAME is missing!"
             exit 1
           fi
 
-          echo "$BODY" > "$OUTPUT_FILE"
-          echo "[INFO] PhantomBuster data saved to $OUTPUT_FILE"
-
-      - name: 🚀 Upload to S3
+      - name: Trigger PhantomBuster Agent
+        id: trigger
         run: |
-          echo "[INFO] Uploading to S3 bucket: $S3_BUCKET_NAME"
-          aws s3 cp "$OUTPUT_FILE" "s3://$S3_BUCKET_NAME/$OUTPUT_FILE"
-          echo "[SUCCESS] Upload complete."
+          echo "Triggering PhantomBuster agent..."
+          curl -s -X POST "https://api.phantombuster.com/api/v2/agents/launch" \
+            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"id\": \"${{ secrets.PHANTOM_AGENT_ID }}\", \"output\": \"first\"}" > launch_output.json
+
+          LAUNCH_ID=$(jq -r '.launch.id' launch_output.json)
+          echo "LAUNCH_ID=$LAUNCH_ID" >> $GITHUB_ENV
+
+      - name: Wait for Completion
+        run: |
+          echo "Waiting for PhantomBuster agent to finish..."
+          for i in {1..20}; do
+            STATUS=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+              -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+              -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.status')
+
+            echo "Attempt $i: STATUS = $STATUS"
+
+            if [[ "$STATUS" == "finished" ]]; then
+              break
+            elif [[ "$STATUS" == "failed" ]]; then
+              echo "Agent failed!"
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+      - name: Download Scraped File
+        run: |
+          echo "Downloading result file..."
+          curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+            -G --data-urlencode "id=$LAUNCH_ID" > launch_data.json
+
+          FILE_URL=$(jq -r '.launch.output.files[0].url' launch_data.json)
+
+          if [[ "$FILE_URL" == "null" ]]; then
+            echo "No file found in output!"
+            exit 1
+          fi
+
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          FILE_NAME="scraped_data_$TIMESTAMP.json"
+          curl -L -o "$FILE_NAME" "$FILE_URL"
+          echo "FILENAME=$FILE_NAME" >> $GITHUB_ENV
+
+      - name: Upload to AWS S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --exact-timestamps --exclude "*" --include "${{ env.FILENAME }}"
+        env:
+          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SOURCE_DIR: .
+          DEST_DIR: "phantombusterdata/"
