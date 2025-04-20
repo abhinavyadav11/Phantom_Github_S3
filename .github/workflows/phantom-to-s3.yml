@@ -1,0 +1,72 @@
+name: PhantomBuster to S3 Sync
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # Every day at 3 AM UTC
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger PhantomBuster Agent
+        id: trigger
+        run: |
+          echo "Triggering PhantomBuster agent..."
+          curl -s -X POST "https://api.phantombuster.com/api/v2/agents/launch" \
+            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"id\": \"${{ secrets.PHANTOM_AGENT_ID }}\", \"output\": \"first\"}" > launch_output.json
+
+          LAUNCH_ID=$(jq -r '.launch.id' launch_output.json)
+          echo "LAUNCH_ID=$LAUNCH_ID" >> $GITHUB_ENV
+
+      - name: Wait for Completion
+        run: |
+          echo "Waiting for PhantomBuster agent to finish..."
+          for i in {1..20}; do
+            STATUS=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+              -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+              -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.status')
+
+            echo "Attempt $i: STATUS = $STATUS"
+
+            if [[ "$STATUS" == "finished" ]]; then
+              break
+            elif [[ "$STATUS" == "failed" ]]; then
+              echo "Agent failed!"
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+      - name: Download Scraped File
+        run: |
+          echo "Downloading result file..."
+          curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
+            -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
+            -G --data-urlencode "id=$LAUNCH_ID" > launch_data.json
+
+          FILE_URL=$(jq -r '.launch.output.files[0].url' launch_data.json)
+
+          if [[ "$FILE_URL" == "null" ]]; then
+            echo "No file found in output!"
+            exit 1
+          fi
+
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          curl -L -o "scraped_data_$TIMESTAMP.json" "$FILE_URL"
+          echo "FILENAME=scraped_data_$TIMESTAMP.json" >> $GITHUB_ENV
+
+      - name: Upload to AWS S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --exact-timestamps
+        env:
+          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SOURCE_DIR: .
+          DEST_DIR: "phantombuster/"
+
