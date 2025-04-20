@@ -1,9 +1,9 @@
-name: PhantomBuster to S3 Sync
+name: PhantomBuster → S3
 
 on:
-  workflow_dispatch:        # Allow manual trigger
+  workflow_dispatch:        # Manual trigger
   schedule:
-    - cron: '0 3 * * *'     # Also runs daily at 3 AM UTC
+    - cron: '0 3 * * *'     # Daily at 3 AM UTC
 
 jobs:
   sync:
@@ -11,31 +11,21 @@ jobs:
     env:
       PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
       PHANTOM_AGENT_ID:      ${{ secrets.PHANTOM_AGENT_ID }}
-      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       S3_BUCKET_NAME:        ${{ secrets.S3_BUCKET_NAME }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip jq
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install AWS CLI
-        run: |
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
-          unzip awscliv2.zip
-          sudo ./aws/install
-          aws --version
-
-      - name: Configure AWS CLI
-        run: |
-          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-          aws configure set default.region us-east-1
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            us-east-1
 
       - name: Trigger PhantomBuster agent
         id: trigger
@@ -54,14 +44,11 @@ jobs:
           for i in {1..30}; do
             status=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
               -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
-              -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.status')
+              -G --data-urlencode "id=$LAUNCH_ID" \
+              | jq -r '.launch.status')
             echo "Attempt $i — status: $status"
-            if [[ "$status" == "finished" ]]; then
-              break
-            elif [[ "$status" == "failed" ]]; then
-              echo "❌ Agent failed!"
-              exit 1
-            fi
+            [[ $status == finished ]] && break
+            [[ $status == failed ]] && { echo "Agent failed"; exit 1; }
             sleep 10
           done
 
@@ -70,15 +57,16 @@ jobs:
         run: |
           url=$(curl -s "https://api.phantombuster.com/api/v2/launches/fetch" \
             -H "X-Phantombuster-Key-1: $PHANTOMBUSTER_API_KEY" \
-            -G --data-urlencode "id=$LAUNCH_ID" | jq -r '.launch.output.files[0].url')
-          timestamp=$(date +'%Y%m%d_%H%M%S')
-          filename="phantom_data_${timestamp}.json"
-          echo "Downloading from $url → $filename"
-          curl -sL "$url" -o "$filename"
-          echo "FILENAME=$filename" >> $GITHUB_ENV
+            -G --data-urlencode "id=$LAUNCH_ID" \
+            | jq -r '.launch.output.files[0].url')
+          ts=$(date +'%Y%m%d_%H%M%S')
+          fn="phantom_data_${ts}.json"
+          echo "Downloading $url → $fn"
+          curl -sL "$url" -o "$fn"
+          echo "FILENAME=$fn" >> $GITHUB_ENV
 
       - name: Upload to S3
         run: |
           echo "Uploading $FILENAME to s3://$S3_BUCKET_NAME/$FILENAME"
           aws s3 cp "$FILENAME" "s3://$S3_BUCKET_NAME/$FILENAME"
-          echo "✅ Upload complete."
+          echo "✅ Done."
