@@ -8,7 +8,27 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Check Required Secrets
+        run: |
+          if [ -z "${{ secrets.PHANTOMBUSTER_API_KEY }}" ]; then
+            echo "ERROR: PHANTOMBUSTER_API_KEY secret is missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.PHANTOM_AGENT_ID }}" ]; then
+            echo "ERROR: PHANTOM_AGENT_ID secret is missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "ERROR: AWS credentials are missing!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.S3_BUCKET_NAME }}" ]; then
+            echo "ERROR: S3_BUCKET_NAME is missing!"
+            exit 1
+          fi
+
       - name: Trigger PhantomBuster Agent
         id: trigger
         run: |
@@ -48,13 +68,7 @@ jobs:
             -H "X-Phantombuster-Key-1: ${{ secrets.PHANTOMBUSTER_API_KEY }}" \
             -G --data-urlencode "id=$LAUNCH_ID" > launch_data.json
 
-          # Debugging: Check contents of the launch_data.json
-          echo "Launch Data: $(cat launch_data.json)"
-
           FILE_URL=$(jq -r '.launch.output.files[0].url' launch_data.json)
-
-          # Debugging: Check extracted file URL
-          echo "File URL: $FILE_URL"
 
           if [[ "$FILE_URL" == "null" ]]; then
             echo "No file found in output!"
@@ -62,13 +76,14 @@ jobs:
           fi
 
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          curl -L -o "scraped_data_$TIMESTAMP.json" "$FILE_URL" || { echo "Download failed"; exit 1; }
-          echo "FILENAME=scraped_data_$TIMESTAMP.json" >> $GITHUB_ENV
+          FILE_NAME="scraped_data_$TIMESTAMP.json"
+          curl -L -o "$FILE_NAME" "$FILE_URL"
+          echo "FILENAME=$FILE_NAME" >> $GITHUB_ENV
 
       - name: Upload to AWS S3
         uses: jakejarvis/s3-sync-action@master
         with:
-          args: --exact-timestamps
+          args: --exact-timestamps --exclude "*" --include "${{ env.FILENAME }}"
         env:
           AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
