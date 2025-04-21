@@ -8,10 +8,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Repo
         uses: actions/checkout@v3
 
-      - name: Run PhantomBuster Agent and Upload to S3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install axios aws-sdk
+
+      - name: Run PhantomBuster and Upload to S3
         run: |
           node <<'EOF'
           const axios = require('axios');
@@ -46,11 +56,7 @@ jobs:
             fs.writeFileSync(filename, output);
             console.log("✅ Output saved locally:", filename);
 
-            // Upload to S3
-            const s3 = new AWS.S3({
-              accessKeyId,
-              secretAccessKey
-            });
+            const s3 = new AWS.S3({ accessKeyId, secretAccessKey });
 
             const uploadParams = {
               Bucket: bucketName,
