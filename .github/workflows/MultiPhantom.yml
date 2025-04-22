@@ -1,0 +1,80 @@
+name: Run Multiple PhantomBuster Agents
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-multiple-phantoms:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install axios aws-sdk
+
+      - name: Run All PhantomBuster Agents
+        run: |
+          node <<'EOF'
+          const axios = require('axios');
+          const fs = require('fs');
+          const AWS = require('aws-sdk');
+
+          const apiKey = '6yYcfWE6vtYMfo7FkkwPCgd4yn851XiTIgwpjudSau0';
+          const agentIds = [
+            '3803367026851739',
+            '7773615394737531',
+            '6407495640158175'
+          ];
+
+          const s3 = new AWS.S3({
+            accessKeyId: 'AKIA472NH4QZCR7AFFDJ',
+            secretAccessKey: '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'
+          });
+
+          async function runAgent(agentId, index) {
+            console.log(`🚀 Launching agent ${index + 1}: ${agentId}`);
+            const launchRes = await axios.post(
+              'https://api.phantombuster.com/api/v2/agents/launch',
+              { id: agentId },
+              { headers: { 'X-Phantombuster-Key-1': apiKey } }
+            );
+
+            const containerId = launchRes.data.containerId;
+            console.log(`⏳ Waiting for agent ${index + 1}...`);
+            await new Promise(r => setTimeout(r, 20000)); // 20s wait
+
+            const resultRes = await axios.get(
+              `https://api.phantombuster.com/api/v2/containers/fetch-output?id=${containerId}`,
+              { headers: { 'X-Phantombuster-Key-1': apiKey } }
+            );
+
+            const output = JSON.stringify(resultRes.data, null, 2);
+            const filename = `phantom_output_${index + 1}.json`;
+            fs.writeFileSync(filename, output);
+            console.log(`✅ Saved locally: ${filename}`);
+
+            const uploadParams = {
+              Bucket: 'phantombusterdata',
+              Key: `phantom-data/phantom_output_${index + 1}_${Date.now()}.json`,
+              Body: output,
+              ContentType: "application/json"
+            };
+
+            await s3.upload(uploadParams).promise();
+            console.log(`✅ Uploaded to S3: ${uploadParams.Key}`);
+          }
+
+          async function runAll() {
+            for (let i = 0; i < agentIds.length; i++) {
+              await runAgent(agentIds[i], i);
+            }
+          }
+
+          runAll().catch(err => {
+            console.error("❌ Error:", err);
+            process.exit(1);
+          });
+          EOF
