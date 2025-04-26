@@ -1,0 +1,84 @@
+name: Run PhantomBuster and Upload to S3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-phantombuster:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install axios aws-sdk
+
+      - name: Run PhantomBuster and Upload to S3
+        # pass your secrets in via the environment
+        env:
+          PHANTOMBUSTER_API_KEY: ${{ secrets.PHANTOMBUSTER_API_KEY }}
+          PHANTOM_AGENT_ID:       ${{ secrets.PHANTOM_AGENT_ID }}
+          AWS_ACCESS_KEY_ID:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          BUCKET_NAME:            'phantombusterdata'  # you can also promote this to a secret if you like
+        run: |
+          node <<'EOF'
+          const axios = require('axios');
+          const fs = require('fs');
+          const AWS = require('aws-sdk');
+
+          // now pulled in from GitHub Secrets
+          const apiKey           = process.env.PHANTOMBUSTER_API_KEY;
+          const agentId          = process.env.PHANTOM_AGENT_ID;
+          const accessKeyId      = process.env.AWS_ACCESS_KEY_ID;
+          const secretAccessKey  = process.env.AWS_SECRET_ACCESS_KEY;
+          const bucketName       = process.env.BUCKET_NAME;
+
+          async function run() {
+            const launchRes = await axios.post(
+              'https://api.phantombuster.com/api/v2/agents/launch',
+              { id: agentId },
+              { headers: { 'X-Phantombuster-Key-1': apiKey } }
+            );
+
+            const containerId = launchRes.data.containerId;
+            console.log("🚀 Launched agent with container ID:", containerId);
+
+            await new Promise(r => setTimeout(r, 20000)); // wait for execution
+
+            const resultRes = await axios.get(
+              `https://api.phantombuster.com/api/v2/containers/fetch-output?id=${containerId}`,
+              { headers: { 'X-Phantombuster-Key-1': apiKey } }
+            );
+
+            const output = JSON.stringify(resultRes.data, null, 2);
+            const filename = "phantom_output.json";
+            fs.writeFileSync(filename, output);
+            console.log("✅ Output saved locally:", filename);
+
+            const s3 = new AWS.S3({ accessKeyId, secretAccessKey });
+
+            const uploadParams = {
+              Bucket: bucketName,
+              Key: `phantom-data/phantom_output_${Date.now()}.json`,
+              Body: output,
+              ContentType: "application/json"
+            };
+
+            await s3.upload(uploadParams).promise();
+            console.log("✅ Uploaded to S3:", uploadParams.Key);
+          }
+
+          run().catch(err => {
+            console.error("❌ Error:", err);
+            process.exit(1);
+          });
+          EOF
