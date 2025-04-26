@@ -1,3 +1,26 @@
+name: Run PhantomBuster and Upload to S3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-phantombuster:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install axios aws-sdk
+
       - name: Run PhantomBuster and Upload to S3
         env:
           SECRET: ${{ secrets.SECRET }}
@@ -8,7 +31,6 @@
           const fs = require('fs');
           const AWS = require('aws-sdk');
 
-          // parse the JSON blob from one single secret
           const { apiKey, agentId, accessKeyId, secretAccessKey } = JSON.parse(process.env.SECRET);
           const bucketName = process.env.BUCKET_NAME;
 
@@ -18,33 +40,28 @@
               { id: agentId },
               { headers: { 'X-Phantombuster-Key-1': apiKey } }
             );
-
             const containerId = launchRes.data.containerId;
             console.log("🚀 Launched agent with container ID:", containerId);
 
-            await new Promise(r => setTimeout(r, 20000)); // wait for execution
+            // wait for the job to finish
+            await new Promise(r => setTimeout(r, 20000));
 
             const resultRes = await axios.get(
               `https://api.phantombuster.com/api/v2/containers/fetch-output?id=${containerId}`,
               { headers: { 'X-Phantombuster-Key-1': apiKey } }
             );
-
             const output = JSON.stringify(resultRes.data, null, 2);
-            const filename = "phantom_output.json";
-            fs.writeFileSync(filename, output);
-            console.log("✅ Output saved locally:", filename);
+            fs.writeFileSync("phantom_output.json", output);
+            console.log("✅ Output saved locally: phantom_output.json");
 
             const s3 = new AWS.S3({ accessKeyId, secretAccessKey });
-
-            const uploadParams = {
+            await s3.upload({
               Bucket: bucketName,
               Key: `phantom-data/phantom_output_${Date.now()}.json`,
               Body: output,
               ContentType: "application/json"
-            };
-
-            await s3.upload(uploadParams).promise();
-            console.log("✅ Uploaded to S3:", uploadParams.Key);
+            }).promise();
+            console.log("✅ Uploaded to S3");
           }
 
           run().catch(err => {
