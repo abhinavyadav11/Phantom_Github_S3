@@ -1,0 +1,103 @@
+name: Run PhantomBuster and Upload to S3 (Once a Day)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  # Runs every day at midnight UTC
+
+jobs:
+  run-phantombuster:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install axios aws-sdk csv-parser
+
+      - name: Run PhantomBuster and Upload to S3
+        env:
+          SECRET: ${{ secrets.SECRET }}
+          BUCKET_NAME: 'phantombusterdata'
+        run: |
+          node <<'EOF'
+          const axios = require('axios');
+          const fs = require('fs');
+          const AWS = require('aws-sdk');
+          const csv = require('csv-parser');
+
+          const { apiKey, agentId, accessKeyId, secretAccessKey } = JSON.parse(process.env.SECRET);
+          const bucketName = process.env.BUCKET_NAME;
+
+          async function readKeywordsFromCSV() {
+            return new Promise((resolve, reject) => {
+              const keywords = [];
+              fs.createReadStream('keywords.csv')
+                .pipe(csv())
+                .on('data', (row) => keywords.push(row['keyword']))
+                .on('end', () => resolve(keywords))
+                .on('error', reject);
+            });
+          }
+
+          async function run() {
+            // Get today's date and yesterday's date for the time filter
+            const today = new Date();
+            const yesterday = new Date(today);
+            yesterday.setDate(today.getDate() - 1);
+
+            // Format dates as YYYY-MM-DD
+            const since = yesterday.toISOString().split('T')[0];
+            const until = today.toISOString().split('T')[0];
+
+            // Read keywords from the CSV file
+            const keywords = await readKeywordsFromCSV();
+            const keywordQueries = keywords.map(keyword => `${keyword} since:${since} until:${until}`);
+
+            // Loop through all keyword queries and trigger PhantomBuster agent for each
+            for (let keywordQuery of keywordQueries) {
+              console.log(`🚀 Launching PhantomBuster agent for keyword: ${keywordQuery}`);
+              const launchRes = await axios.post(
+                'https://api.phantombuster.com/api/v2/agents/launch',
+                { id: agentId, argument: { keyword: keywordQuery } },
+                { headers: { 'X-Phantombuster-Key-1': apiKey } }
+              );
+              const containerId = launchRes.data.containerId;
+              console.log("🚀 Launched agent with container ID:", containerId);
+
+              // Wait for the job to finish (adjust the delay based on PhantomBuster's processing time)
+              await new Promise(r => setTimeout(r, 20000));
+
+              const resultRes = await axios.get(
+                `https://api.phantombuster.com/api/v2/containers/fetch-output?id=${containerId}`,
+                { headers: { 'X-Phantombuster-Key-1': apiKey } }
+              );
+              const output = JSON.stringify(resultRes.data, null, 2);
+              fs.writeFileSync(`phantom_output_${keywordQuery}.json`, output);
+              console.log(`✅ Output saved locally: phantom_output_${keywordQuery}.json`);
+
+              // Upload the result to S3
+              const s3 = new AWS.S3({ accessKeyId, secretAccessKey });
+              await s3.upload({
+                Bucket: bucketName,
+                Key: `phantom-data/phantom_output_${Date.now()}.json`,
+                Body: output,
+                ContentType: "application/json"
+              }).promise();
+              console.log("✅ Uploaded to S3");
+            }
+          }
+
+          run().catch(err => {
+            console.error("❌ Error:", err);
+            process.exit(1);
+          });
+          EOF
